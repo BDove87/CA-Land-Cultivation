@@ -21,7 +21,7 @@ from shapely.geometry import Polygon
 from sklearn import metrics, preprocessing
 from tqdm import tqdm
 
-from sentinelhub import DataCollection, UtmZoneSplitter, BBoxSplitter, CRS, BBox
+from sentinelhub import DataCollection, BBoxSplitter, CRS
 
 # Imports from eo-learn and sentinelhub-py
 from eolearn.core import (
@@ -41,111 +41,61 @@ from eolearn.geometry import ErosionTask, VectorToRasterTask
 from eolearn.io import ExportToTiffTask, SentinelHubInputTask, VectorImportTask
 from eolearn.ml_tools import FractionSamplingTask
 
-from shapely.ops import polygonize
+from shapely.geometry import box
 
-# %% Creating and sorting reference LULC map
+import rasterio
+from rasterio import features
+from shapely.geometry import shape
 
 
-#bbox = (-121.7107,36.5494,-121.5102,36.7411)
+
+# %% Creating and sorting reference LULC map - takes a while
 
 bbox = (-119.998169,36.424598,-119.505157,36.842812)
 
 ref = gpd.read_file("C:/Users/bdove/Downloads/i15_crop_mapping_2019/i15_Crop_Mapping_2019/i15_Crop_Mapping_2019.shp", bbox)
 
-#Adding cultivated column to easily sort later                    
-#ref['Cultivated'] = 0
+ref.to_file('C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/careflulc.gpkg', driver="GPKG")
 
 
+#%% Reading sorted reference file
 
-ref.to_file('C:/Users/bdove/Desktop/LULC Project/CA LULC/selreflulc.gpkg', driver="GPKG")
+ref = gpd.read_file('C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/careflulc.gpkg')
 
-#Converting to 4326 so Sentinelhub can read it
-#df = df.to_crs("EPSG:4326")
-
-#%% 
-
-ref = gpd.read_file('C:/Users/bdove/Desktop/LULC Project/CA LULC/selreflulc.gpkg')
-
-
+ref.plot()
+plt.axis("off")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/reference.png")
 
 # %% Reading and processing CA border data
 
 # Folder where data for running the notebook is stored
-DATA_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA LULC/eo-learn-master/example_data'
+DATA_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eo-learn-master/example_data'
 # Locations for collected data and intermediate results
-EOPATCH_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA LULC/eopatches'
-EOPATCH_SAMPLES_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA LULC/eopatches_sampled'
-RESULTS_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA LULC/results'
+EOPATCH_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eopatches'
+EOPATCH_SAMPLES_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eopatches_sampled'
+RESULTS_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/results'
 
 for folder in (EOPATCH_FOLDER, EOPATCH_SAMPLES_FOLDER, RESULTS_FOLDER):
     os.makedirs(folder, exist_ok=True)
 
 
-from shapely.geometry import box
-#coords for selinas
-#selshape = box(-121.7107,36.5494,-121.5102,36.7411)
-
-#shape of fresno
-selshape = box(-119.998169,36.424598,-119.505157,36.842812)
-df = gpd.GeoDataFrame(index=[0], crs='epsg:4326', geometry=[selshape])
-print(df)
+#shape containing area near fresno
+cashape = box(-119.998169,36.424598,-119.505157,36.842812)
+df = gpd.GeoDataFrame(index=[0], crs='epsg:4326', geometry=[cashape])
 
 
-"""
 df.plot()
 plt.axis("off")
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/shape.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/cashape.png")
 
 
-#Get the country's shape in polygon format
-selshape = df.geometry.values[0]
-sel_bord = co_bord.buffer(500)
+# %% Splitting area of interest into boundary boxes
 
+bbox_splitter = BBoxSplitter([cashape], CRS.WGS84, (20,20))
 
-
-#Splitting into 9x12.5km boxes
-#bbox_splitter = BBoxSplitter([coshape], CRS.WGS84, (50,50))
-"""
-
-
-
-
-
-# %%
-bbox_splitter = BBoxSplitter([selshape], CRS.WGS84, (20,20))
-
-"""
-# Reversing reordering lng-lat into lat-long to sentinelhub can read the request
-bbox_list = bbox_splitter.get_bbox_list()
-
-
-
-for i in range(len(bbox_list)):
-    #bbox_list.reverse() -> reverse function doesn't work for some reason, doing it manually:
-    oldminx = bbox_list[i].min_x
-    oldminy = bbox_list[i].min_y
-    oldmaxx = bbox_list[i].max_x
-    oldmaxy = bbox_list[i].max_y 
-    bbox_list[i].min_x = oldminy
-    bbox_list[i].min_y = oldminx
-    bbox_list[i].max_x = oldmaxy
-    bbox_list[i].max_y = oldmaxx
-"""    
 bbox_list = np.array(bbox_splitter.get_bbox_list())
 
-
 info_list = bbox_splitter.get_info_list()
-
-"""
-# Reversing reordering lng-lat into lat-long to sentinelhub can read the request
-for i in range(len(info_list)):
-    il = info_list[i]
-    ilr = il['parent_bbox']
-    ilr = ilr.reverse()
-    info_list[i].update({'parent_bbox': ilr})
-"""
-
-
 
 #Adding index key to info_list so bboxes can be labeled properly
 idf = []
@@ -156,15 +106,11 @@ for i in range(len(info_list)):
     
 info_list = np.array(idf)
 
-
 geometry = [Polygon(bbox.get_polygon()) for bbox in bbox_list]
-
 
 idxs = [info["index"] for info in info_list]
 idxs_x = [info["index_x"] for info in info_list]
 idxs_y = [info["index_y"] for info in info_list]
-
-
 
 bbox_gdf = gpd.GeoDataFrame({"index": idxs, "index_x": idxs_x, "index_y": idxs_y}, crs=df.crs, geometry=geometry)
 
@@ -184,12 +130,11 @@ if len(patchIDs) != 5 * 5:
     print("Warning! Use a different central patch ID, this one is on the border.")
 
 
-
 # Change the order of the patches (useful for plotting)
 patchIDs = np.transpose(np.fliplr(np.array(patchIDs).reshape(5,5))).ravel()
 
 # Save to shapefile
-shapefile_name = "grid_ca_selinas.gpkg"
+shapefile_name = "grid_ca.gpkg"
 bbox_gdf.to_file(os.path.join(RESULTS_FOLDER, shapefile_name), driver="GPKG")
 
 
@@ -203,18 +148,11 @@ df.plot(ax=ax, facecolor="w", edgecolor="black", alpha=0.5)
 
 bbox_gdf.plot(ax=ax, facecolor="w", edgecolor="r", alpha=0.5)
 
-
-
-#selshape = box(-121.7107,36.5494,-121.5102,36.7411)
-#xlim =(-121.7107, -121.5102)
-#ylim =(36.5494,36.7411)
-selshape = box(-119.998169,36.424598,-119.505157,36.842812)
 xlim = (-119.998169,-119.505157)
 ylim = (36.424598, 36.842812)
 ax.set_xlim(xlim)
 ax.set_ylim(ylim)
 ref.plot(ax=ax, facecolor="w", edgecolor="b", alpha=0.5)
-
 
 for bbox, info in zip(bbox_list, info_list):
     geo = bbox.geometry
@@ -224,7 +162,7 @@ for bbox, info in zip(bbox_list, info_list):
 bbox_gdf[bbox_gdf.index.isin(patchIDs)].plot(ax=ax, facecolor="g", edgecolor="r", alpha=0.5)
 
 plt.axis("off");
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/selinasbbox.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/cabbox.png")
 
 # %% Defining SentinelHub classes & workflow
 
@@ -324,13 +262,11 @@ for i in range(len(ref)):
         iterlist.append(2)
     else:
         print("error at index ", i, " with classifier ", ref[i])
-        
-#iterlist = np.array(iterlist)
+
         
 ref['Cultivated'] = iterlist
         
-ref.to_file('C:/Users/bdove/Desktop/LULC Project/CA LULC/sortedselreflulc.gpkg', driver = "GPKG")
-
+ref.to_file('C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/sortedcareflulc.gpkg', driver = "GPKG")
 
 
 #%% Colormap
@@ -356,7 +292,7 @@ class LULC(MultiValueEnum):
 lulc_cmap = ListedColormap([x.color for x in LULC], name="lulc_cmap")
 lulc_norm = BoundaryNorm([x - 0.5 for x in range(len(LULC) + 1)], lulc_cmap.N)
 
-land_use_ref_path = 'C:/Users/bdove/Desktop/LULC Project/CA LULC/sortedselreflulc.gpkg'
+land_use_ref_path = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/sortedcareflulc.gpkg'
 
 vector_feature = FeatureType.VECTOR_TIMELESS, "LULC_REFERENCE"
 
@@ -375,190 +311,6 @@ workflow_nodes = linearly_connect_tasks(
     add_data, ndvi, ndwi, ndbi, add_sh_validmask, add_valid_count, vector_import_task, rasterization_task, save
 )
 workflow = EOWorkflow(workflow_nodes)
-"""
-# Let's visualize it
-#workflow.dependency_graph('C:/Users/bdove/Desktop/LULC Project/workflow.jpg')
-"""
-
-
-
-
-#%% Sorting reference LULC into cultivated/not cultivated
-
-import numpy as np
-
-cultlist = ['G', 'R', 'F', 'P','T', 'D', 'C', 'V']
-uclist = ['I', 'S', 'U', 'UR', 'UC', 'UI', 'UV', 'NC', 'NV', 'NR', 'NW', 'NB', 'X', 'YP']
-ndlist = ['NS', 'E', 'Z']
-
-
-refclass = ref['SYMB_CLASS']
-
-
-iterlist = []
-
-for i in range(len(ref)):
-    if refclass[i] == 'G':
-        #ref['Cultivated'] = 0
-        iterlist.append(1)
-    elif refclass[i] == 'R':
-        #ref['Cultivated'] = 1
-        iterlist.append(2)
-    elif refclass[i] == 'F':
-        #ref['Cultivated'] = 1
-        iterlist.append(3)
-    elif refclass[i] == 'P':
-        #ref['Cultivated'] = 1
-        iterlist.append(4)
-    elif refclass[i] == 'T':
-        #ref['Cultivated'] = 1
-        iterlist.append(5)
-    elif refclass[i] == 'D':
-        #ref['Cultivated'] = 1
-        iterlist.append(6)
-    elif refclass[i] == 'C':
-        #ref['Cultivated'] = 1
-        iterlist.append(7)
-    elif refclass[i] == 'V':
-        #ref['Cultivated'] = 1
-        iterlist.append(8)
-    elif refclass[i] == 'I':
-        #ref['Cultivated'] = 1
-        iterlist.append(9)
-    elif refclass[i] == 'S':
-        #ref['Cultivated'] = 1
-        iterlist.append(10)
-    elif refclass[i] == 'U':
-        #ref['Cultivated'] = 1
-        iterlist.append(11)
-    elif refclass[i] == 'UR':
-        #ref['Cultivated'] = 1
-        iterlist.append(12)
-    elif refclass[i] == 'UC':
-        #ref['Cultivated'] = 1
-        iterlist.append(13)
-    elif refclass[i] == 'UI':
-        #ref['Cultivated'] = 1
-        iterlist.append(14)
-    elif refclass[i] == 'UV':
-        #ref['Cultivated'] = 1
-        iterlist.append(15)
-    elif refclass[i] == 'NC':
-        #ref['Cultivated'] = 1
-        iterlist.append(16)
-    elif refclass[i] == 'NV':
-        #ref['Cultivated'] = 1
-        iterlist.append(17)
-    elif refclass[i] == 'NR':
-        #ref['Cultivated'] = 1
-        iterlist.append(18)
-    elif refclass[i] == 'NW':
-        #ref['Cultivated'] = 1
-        iterlist.append(19)
-    elif refclass[i] == 'NB':
-        #ref['Cultivated'] = 1
-        iterlist.append(20)
-    elif refclass[i] == 'NS':
-        #ref['Cultivated'] = 1
-        iterlist.append(21)
-    elif refclass[i] == 'E':
-        #ref['Cultivated'] = 1
-        iterlist.append(22)
-    elif refclass[i] == 'Z':
-        #ref['Cultivated'] = 1
-        iterlist.append(23)
-    elif refclass[i] == 'X':
-        #ref['Cultivated'] = 1
-        iterlist.append(24)
-    elif refclass[i] == 'YP':
-        #ref['Cultivated'] = 1
-        iterlist.append(25)
-    else:
-        print("error at index ", i, " with classifier ", ref[i])
-        
-#iterlist = np.array(iterlist)
-        
-ref['Cultivated'] = iterlist
-        
-ref.to_file('C:/Users/bdove/Desktop/LULC Project/CA LULC/sortedselreflulc.gpkg', driver = "GPKG")
-
-
-#%%
-
-
-reflulc = gpd.read_file('C:/Users/bdove/Desktop/LULC Project/CA LULC/sortedselreflulc.gpkg')
-
-#%% Colormap
-
-class LULC(MultiValueEnum):
-    """Enum class containing basic LULC types"""
-    
-    NO_DATA = "No Data", 0, "#ffffff"
-    GRAIN = "Grain and hay crops", 1, "#ffff00"
-    RICE = "Rice", 2, "#054907"
-    FIELD_CROPS = "Field Crops", 3, "#ffa500"
-    PASTURE = "Pasture", 4, "#806000"
-    TRUCK_CROPS = "Truck, nursery, and berry crops", 5, "#069af3"
-    DECIDUOUS_FRUITS_NUTS = "Deciduos fruit and nuts", 6, "#95d0fc"
-    CITRUS = "Citrus and subtropical", 7, "#967bb6"
-    VINEYARDS = "Vineyards", 8, "#dc143c"
-    IDLE = "Idle", 9, "#a6a6a6"
-    SEMI_AG = "Semi-agricultural and incidental to agriculture", 10, "#8B0000"
-    URBAN = "Urban - residential, commerical and industrial, unsegregated", 11, "#FFA07A"
-    URBAN_RES = "Urban - residential, single and multi family units, includes trailer parks", 12, "#008080"
-    URBAN_COM = "Urban - commerical", 13, "#00FF00"
-    URBAN_IND = "Urban - industrial", 14, "#FFB07A"
-    URBAN_VAC = "Urban - vacant", 15, "#FF7F50"
-    NATIVE_CLASSES = "Native classes, unsegregated", 16, "#FFD700"
-    NATIVE_VEG = "Native vegetation", 17, "#FF8C00"
-    NATIVE_RIP = "Native riparian vegetation", 18, "#FFFACD"
-    WATER = "Water Surface", 19, "#FFEFD5"
-    BARREN = "Barren and wasteland", 20, "#BDB76B"
-    NOT_SURVEYED = "Not surveyed", 21, "#32CD32"
-    ENTRY_DENIED = "Entry Denied", 22, "#006400"
-    OUTSIDE_AREA = "Outside area of study", 23, "#00FF7F"
-    UNCLASSIFIED_FALLOW = "Unclassified fallow", 24, "#00FA9A"
-    YOUNG_PERENNIAL="Young Perennial", 25, "#2E8B57"
-
-
-
-    @property
-    def id(self):
-        return self.values[1]
-
-    @property
-    def color(self):
-        return self.values[2]
-
-
-# Reference colormap things
-lulc_cmap = ListedColormap([x.color for x in LULC], name="lulc_cmap")
-lulc_norm = BoundaryNorm([x - 0.5 for x in range(len(LULC) + 1)], lulc_cmap.N)
-
-land_use_ref_path = 'C:/Users/bdove/Desktop/LULC Project/CA LULC/sortedselreflulc.gpkg'
-
-vector_feature = FeatureType.VECTOR_TIMELESS, "LULC_REFERENCE"
-
-vector_import_task = VectorImportTask(vector_feature, land_use_ref_path)
-
-rasterization_task = VectorToRasterTask(
-    vector_feature,
-    (FeatureType.MASK_TIMELESS, "LULC"),
-    values_column="SYMB_CLASS",
-    raster_shape=(FeatureType.MASK, "IS_DATA"),
-    raster_dtype=np.uint8,
-)
-
-# Define the workflow
-workflow_nodes = linearly_connect_tasks(
-    add_data, ndvi, ndwi, ndbi, add_sh_validmask, add_valid_count, vector_import_task, rasterization_task, save
-)
-workflow = EOWorkflow(workflow_nodes)
-"""
-# Let's visualize it
-#workflow.dependency_graph('C:/Users/bdove/Desktop/LULC Project/workflow.jpg')
-"""
-
 
 
 # %% Generating EOPatches - takes forever try not to run again
@@ -566,13 +318,10 @@ workflow = EOWorkflow(workflow_nodes)
 # Time interval for the SH request
 time_interval = ["2019-01-01", "2019-12-31"]
 
-
 # Define additional parameters of the workflow
 input_node = workflow_nodes[0]
 save_node = workflow_nodes[-1]
 execution_args = []
-
-
 
 
 for idx, bbox in enumerate(bbox_list[patchIDs]):
@@ -584,11 +333,6 @@ for idx, bbox in enumerate(bbox_list[patchIDs]):
     )
 
 # Execute the workflow
-
-
-
-
-
 executor = EOExecutor(workflow, execution_args, save_logs=True)    
 executor.run(workers=1)
 executor.make_report()
@@ -604,19 +348,15 @@ if failed_ids:
     
 # %% Loading EOPatches & generating plots
 
-
-
-eopatch = EOPatch.load('C:/Users/bdove/Desktop/LULC Project/CA LULC/eopatches/eopatch_0')
-
+eopatch = EOPatch.load('C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eopatches/eopatch_0')
 
 fig, axs = plt.subplots(nrows=5, ncols=5, figsize=(20, 20))
 
 date = datetime.datetime(2019, 7, 1)
 
 
-
 for i in tqdm(range(len(patchIDs))):
-    eopatch_path = os.path.join('C:/Users/bdove/Desktop/LULC Project/CA LULC/eopatches', f"eopatch_{i}")
+    eopatch_path = os.path.join('C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eopatches', f"eopatch_{i}")
     eopatch = EOPatch.load(eopatch_path, lazy_loading=True)
 
     dates = np.array([timestamp.replace(tzinfo=None) for timestamp in eopatch.timestamp])
@@ -631,8 +371,7 @@ for i in tqdm(range(len(patchIDs))):
 
 
 fig.subplots_adjust(wspace=0, hspace=0)
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/sat.png")
-
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/sat.png")
 
 
 # Reference colormap things
@@ -659,8 +398,7 @@ cb.ax.tick_params(labelsize=20)
 cb.set_ticks([entry.id for entry in LULC])
 cb.ax.set_xticklabels([entry.name for entry in LULC], rotation=45, fontsize=15)
 #plt.show();
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/referencemap.png")
-
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/referencemap.png")
 
 
 # Calculate min and max counts of valid data per pixel
@@ -689,9 +427,7 @@ fig.subplots_adjust(wspace=0, hspace=0)
 cb = fig.colorbar(im, ax=axs.ravel().tolist(), orientation="horizontal", pad=0.01, aspect=100)
 cb.ax.tick_params(labelsize=20)
 #plt.show()
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/validpixelcounts.png")
-
-
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/validpixelcounts.png")
 
 
 eID = 16
@@ -720,8 +456,7 @@ plt.xticks(fontsize=15)
 plt.yticks(fontsize=15)
 
 plt.legend(loc=2, prop={"size": 15});
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/cloudcleaningresults.png")
-
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/cloudcleaningresults.png")
 
 
 # Calculate temporal mean of NDVI
@@ -747,8 +482,7 @@ fig.subplots_adjust(wspace=0, hspace=0)
 cb = fig.colorbar(im, ax=axs.ravel().tolist(), orientation="horizontal", pad=0.01, aspect=100)
 cb.ax.tick_params(labelsize=20)
 #plt.show()
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/NDVI.png")
-
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/NDVI.png")
 
 
 fig, axs = plt.subplots(nrows=5, ncols=5, figsize=(20, 25))
@@ -773,7 +507,7 @@ fig.subplots_adjust(wspace=0, hspace=0)
 cb = fig.colorbar(im, ax=axs.ravel().tolist(), orientation="horizontal", pad=0.01, aspect=100)
 cb.ax.tick_params(labelsize=20)
 #plt.show()
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/cloudprobability.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/cloudprobability.png")
 
 
 # %% Sampling EO Patches
@@ -790,9 +524,6 @@ class ValidDataFractionPredicate:
     def __call__(self, array):
         coverage = np.sum(array.astype(np.uint8)) / np.prod(array.shape)
         return coverage > self.threshold
-
-
-
 
 
 # LOAD EXISTING EOPATCHES
@@ -838,9 +569,6 @@ save = SaveTask(EOPATCH_SAMPLES_FOLDER, overwrite_permission=OverwritePermission
 # Define the workflow
 workflow_nodes = linearly_connect_tasks(load, concatenate, filter_task, linear_interp, erosion, spatial_sampling, save)
 workflow = EOWorkflow(workflow_nodes)
-
-
-
 
 
 execution_args = []
@@ -892,10 +620,6 @@ labels_test = np.concatenate([eopatch.mask_timeless["LULC_ERODED"] for eopatch i
 t, w1, h, f = features_train.shape
 t, w2, h, f = features_test.shape
 
-
-#%%
-
-
 # Reshape to n x m
 features_train = np.moveaxis(features_train, 0, 2).reshape(w1 * h, t * f)
 labels_train = labels_train.reshape(w1 * h)
@@ -903,16 +627,6 @@ features_test = np.moveaxis(features_test, 0, 2).reshape(w2 * h, t * f)
 labels_test = labels_test.reshape(w2 * h)
 
 shapetest = features_train.shape
-
-#%% swapping axis
-
-features_train2 = np.swapaxes(features_test,0,1)
-features_test2 = np.swapaxes(features_test,0,1)
-
-
-
-# %%
-
 
 # Set up training classes
 labels_unique = np.unique(labels_train)
@@ -925,102 +639,26 @@ model = lgb.LGBMClassifier(
 # Train the model
 model.fit(features_train, labels_train)
 
-
-
 # Save the model
-joblib.dump(model, os.path.join(RESULTS_FOLDER, "model_SI_LULC.pkl"))
-
-#%% testing ordinal encoder to fix label bug
-
-from sklearn.preprocessing import OrdinalEncoder
-
-#Create encoder
-
-ordinal_encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
-
-ordinal_encoder.fit(labels_train.reshape(-1,1))
-ordinal_encoder.transform(labels_train.reshape(-1,1))
-
-#ordinal_encoder.fit(features_train)
-#ordinal_encoder.fit(features_train.reshape(-1,1))
-
-
-#%%  testing
-
-from sklearn.preprocessing import LabelEncoder
-import bisect
-
-le = preprocessing.LabelEncoder()
-le.fit(labels_train)
-
-le_classes = np.append(le.classes_, '<unknown>')
-
-#le_dict = dict(zip(le.classes_, le.transform(le.classes_)))
-
-
-
-#%% more testing
-
-
-
-
+joblib.dump(model, os.path.join(RESULTS_FOLDER, "CA_cultivation_model.pkl"))
 
 
 # %% Predicting test labels
-
-import pandas as pd
 
 # Load the model
 model_path = os.path.join(RESULTS_FOLDER, "model_SI_LULC.pkl")
 model = joblib.load(model_path)
 
-#features_test = np.swapaxes(features_test,0,1)
-
-#le = preprocessing.LabelEncoder()
-#le.fit(labels_test)
-
-
+"""
+predict_proba function in LGBMClassifier handles arrays w/ 2 classes differently than those with 2+ classes, had to change SKlearn to fix.
+Commented out one line and added one line, behavior works as expected now:
+#return np.vstack((1. - result, result)).transpose()
+return result
+"""
 predicted_labels_test = model.predict(features_test)
 
-"""
-#gives label error, working around
-predicted_labels_test = model.predict_proba(features_test)
 
-labeldf = (pd.DataFrame(predicted_labels_test)).T
-"""
-
-#%%
-
-import numpy as np
-
-
-label0 = labeldf[0]
-label1 = labeldf[1]
-
-iterlist = []
-
-for i in range(len(labeldf)):
-    if label0[i] > label1[i]:
-        #ref['Cultivated'] = 0
-        iterlist.append(1)
-    elif label0[i] < label1[i]:
-        #ref['Cultivated'] = 1
-        iterlist.append(2)
-    elif label0[i] == label1[i]:
-        iterlist.append(2)
-    else:
-        print("error at index ", i)
-        
-#iterlist = np.array(iterlist)
-        
-labeldf['label'] = iterlist
-        
-
-
-
-
-
-#%%
+#%% Predicting test labels
 class_labels = np.unique(labels_test)
 class_names = [lulc_type.name for lulc_type in LULC]
 mask = np.in1d(predicted_labels_test, labels_test)
@@ -1047,9 +685,6 @@ for idx, lulctype in enumerate([class_names[idx] for idx in class_labels]):
 
 
 # %% Confusion Matrixes
-
-
-## Confusion Matrixes
 
 # Define the plotting function
 def plot_confusion_matrix(
@@ -1119,12 +754,6 @@ plot_confusion_matrix(
 )
 
 plt.tight_layout()
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/confusionmatrix.png")
-
-
-
-
-
 
 fig = plt.figure(figsize=(20, 5))
 
@@ -1134,7 +763,13 @@ plt.bar(range(len(label_ids)), label_counts)
 plt.xticks(range(len(label_ids)), [class_names[i] for i in label_ids], rotation=45, fontsize=20)
 plt.yticks(fontsize=20);
 
-# %% Generating ROC Curves - Broken
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/confusionmatrix.png")
+
+# %% Generating ROC Curves - Broken currently
+
+"""
+label_binarize handles arrays w/ 2 classes differently than those with 2+ classes. Not super important, fix when time is available
+"""
 
 class_labels = np.unique(np.hstack([labels_test, labels_train]))
 
@@ -1143,8 +778,6 @@ labels_binarized = preprocessing.label_binarize(labels_test, classes=class_label
 
 fpr, tpr, roc_auc = {}, {}, {}
 
-
-"""
 for idx, lbl in enumerate(class_labels):
     fpr[idx], tpr[idx], _ = metrics.roc_curve(labels_binarized[:, idx], scores_test[:, idx])
     roc_auc[idx] = metrics.auc(fpr[idx], tpr[idx])
@@ -1172,8 +805,8 @@ plt.xticks(fontsize=20)
 plt.yticks(fontsize=20)
 plt.title("ROC Curve", fontsize=20)
 plt.legend(loc="center right", prop={"size": 15})
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/roccurve.png")
-"""
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/roccurve.png")
+
 
 # %% Finding most important features
 
@@ -1199,7 +832,7 @@ fig.subplots_adjust(wspace=0, hspace=0)
 
 cb = fig.colorbar(im, ax=[ax], orientation="horizontal", pad=0.01, aspect=100)
 cb.ax.tick_params(labelsize=20)
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/importantfeatures.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/importantfeatures.png")
 
 # %% Draw the RGB image
 
@@ -1218,7 +851,7 @@ for i in tqdm(range(len(patchIDs))):
     del eopatch
 
 fig.subplots_adjust(wspace=0, hspace=0)
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/rgbimg.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/rgbimg.png")
 
 # %% Run patch prediction and export to GEOTiff
 
@@ -1263,9 +896,8 @@ predict = PredictPatchTask(model, (FeatureType.DATA, "FEATURES"), "LBL_GBM", "SC
 save = SaveTask(EOPATCH_SAMPLES_FOLDER, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
 
-
 # EXPORT TIFF
-export_tiff = ExportToTiffTask((FeatureType.MASK_TIMELESS, "LBL_GBM"), 'C:/Users/bdove/Desktop/LULC Project/CA LULC/results/predicted_tiff')
+export_tiff = ExportToTiffTask((FeatureType.MASK_TIMELESS, "LBL_GBM"), 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/results/predicted_tiff')
 tiff_location = os.path.join(RESULTS_FOLDER, "predicted_tiff")
 os.makedirs('C:/Users/bdove/Desktop/LULC Project/CA LULC/results/predicted_tiff', exist_ok=True)
 
@@ -1321,7 +953,7 @@ cb = fig.colorbar(im, ax=axs.ravel().tolist(), orientation="horizontal", pad=0.0
 cb.ax.tick_params(labelsize=20)
 cb.set_ticks([entry.id for entry in LULC])
 cb.ax.set_xticklabels([entry.name for entry in LULC], rotation=45, fontsize=15)
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/prediction.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/prediction.png")
 
 # %% Visual inspection of patches
 
@@ -1371,24 +1003,36 @@ ax.set_aspect("auto")
 plt.title("True Color", fontsize=20)
 
 fig.subplots_adjust(wspace=0.1, hspace=0.1)
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA LULC/finalcomparison.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/finalcomparison.png")
 
 
-#%% Testing for GeoTiff reading
-
-import rasterio
-import rasterio.features
-import rasterio.warp
-
-"""
-with rasterio.open('C:/Users/bdove/Desktop/LULC Project/CA LULC/results/predicted_tiff/prediction_eopatch_0.tiff') as dataset:
+#%% Reads GeoTiffs and converts them to polygons based on different unique tags
+for i in range(25):
+    dataset = rasterio.open(f'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/results/predicted_tiff/prediction_eopatch_{i}.tiff')
     
-    mask = dataset.dataset_mask()
+    #Gets affine transform matrix
+    transformer = dataset.transform
     
-    for geom, val in rasterio.features.shapes(
-            mask, transform=dataset.transform):
-        
-        geom = rasterio.warp.transform_geom(dataset.crs, 'EPSG:4269', geom, precision=6)
-"""
-
-dataset = rasterio.open('C:/Users/bdove/Desktop/LULC Project/CA LULC/results/predicted_tiff/prediction_eopatch_0.tiff')
+    #Gets array of tags
+    cult_val = dataset.read(1)
+    
+    tags = []
+    polys = []
+    
+    #Gets GeoJson-like polygons based on tags in geotiff
+    for polygons, value in features.shapes(cult_val, transform=transformer):
+        tags.append(value)
+        polys.append(polygons)
+    
+    
+    gdf = gpd.GeoDataFrame({'Tag':tags})
+    
+    #Converts GeoJson-like polygon data to shapely polygons
+    shapely_polys = []
+    for j in range(len(polys)):
+        shapely_polys.append(shape(polys[j]))
+    
+    
+    gdf.set_geometry(shapely_polys,inplace=True)
+    
+    gdf.to_file(f'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/results/cultivated_land_polys_eopatch_{i}', driver='GPKG')
