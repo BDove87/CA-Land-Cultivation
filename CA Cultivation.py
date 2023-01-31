@@ -68,7 +68,7 @@ plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/refe
 
 # %% Reading and processing CA border data
 
-# Folder where data for running the notebook is stored
+# Folder where data for running the script is stored
 DATA_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eo-learn-master/example_data'
 # Locations for collected data and intermediate results
 EOPATCH_FOLDER = 'C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/eopatches'
@@ -138,7 +138,7 @@ shapefile_name = "grid_ca.gpkg"
 bbox_gdf.to_file(os.path.join(RESULTS_FOLDER, shapefile_name), driver="GPKG")
 
 
-# Display bboxes over country
+# Display bboxes over AOI
 fig, ax = plt.subplots(figsize=(30, 30))
 ax.set_title("Selected 5x5 tiles from California", fontsize=25)
 
@@ -755,7 +755,9 @@ plot_confusion_matrix(
 
 plt.tight_layout()
 
-fig = plt.figure(figsize=(20, 5))
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/confusionmatrix.png")
+
+fig = plt.figure(figsize=(20, 25))
 
 label_ids, label_counts = np.unique(labels_train, return_counts=True)
 
@@ -763,7 +765,7 @@ plt.bar(range(len(label_ids)), label_counts)
 plt.xticks(range(len(label_ids)), [class_names[i] for i in label_ids], rotation=45, fontsize=20)
 plt.yticks(fontsize=20);
 
-plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/confusionmatrix.png")
+plt.savefig("C:/Users/bdove/Desktop/LULC Project/CA Land Cultivation/graphs/labelcounts.png")
 
 # %% Generating ROC Curves - Broken currently
 
